@@ -1,0 +1,28 @@
+name: Build Zyphra EXE
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install customtkinter psutil pyinstaller
+
+      - name: Build Zyphra.exe
+        run: python -m PyInstaller --noconsole --onefile --uac-admin --collect-all customtkinter --name Zyphra zyphra_pc_check.py
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zyphra-EXE
+          path: dist/Zyphra.exe
