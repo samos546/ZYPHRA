@@ -295,13 +295,119 @@ class Scanner:
                                               f"SHA-256 matches known cheat: {digest}"))
 
 
+class GradientBar(tk.Canvas):
+    """Animated horizontal gradient progress bar with a moving glow pulse."""
+
+    def __init__(self, parent, width=760, height=10, **kwargs):
+        super().__init__(parent, width=width, height=height, bg=COLORS["card"],
+                         highlightthickness=0, **kwargs)
+        self.w = width
+        self.h = height
+        self._frac = 0.0
+        self._pulse_x = 0
+        self._running = False
+        self.bind("<Configure>", self._on_resize)
+        self._draw()
+
+    def _on_resize(self, event):
+        self.w = event.width
+        self._draw()
+
+    def set(self, frac: float):
+        self._frac = max(0.0, min(1.0, frac))
+        self._draw()
+
+    def start_pulse(self):
+        if not self._running:
+            self._running = True
+            self._animate_pulse()
+
+    def stop_pulse(self):
+        self._running = False
+
+    def _animate_pulse(self):
+        if not self._running:
+            return
+        self._pulse_x = (self._pulse_x + 14) % (self.w + 120)
+        self._draw()
+        self.after(30, self._animate_pulse)
+
+    def _draw(self):
+        self.delete("all")
+        self.create_rectangle(0, 0, self.w, self.h, fill=COLORS["card"], outline="")
+        fill_w = int(self.w * self._frac)
+        if fill_w > 1:
+            steps = max(fill_w // 4, 1)
+            c1, c2 = (124, 92, 255), (255, 77, 109)
+            for i in range(steps):
+                t = i / max(steps - 1, 1)
+                r = int(c1[0] + (c2[0] - c1[0]) * t * 0.35)
+                g = int(c1[1] + (c2[1] - c1[1]) * t * 0.35)
+                b = int(c1[2] + (c2[2] - c1[2]) * t * 0.35)
+                x0 = int(i * fill_w / steps)
+                x1 = int((i + 1) * fill_w / steps)
+                self.create_rectangle(x0, 0, x1, self.h, fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
+        if self._running:
+            glow_x = self._pulse_x - 60
+            self.create_oval(glow_x, -6, glow_x + 60, self.h + 6,
+                             fill="", outline=COLORS["accent"], width=2)
+
+
+class PulseDot(tk.Canvas):
+    """Small breathing status dot."""
+
+    def __init__(self, parent, color=COLORS["muted"], size=12):
+        super().__init__(parent, width=size, height=size, bg=COLORS["panel"], highlightthickness=0)
+        self.size = size
+        self.color = color
+        self._r = size // 3
+        self._grow = True
+        self._active = False
+        self._draw()
+
+    def set_color(self, color):
+        self.color = color
+        self._draw()
+
+    def set_active(self, active: bool):
+        self._active = active
+        if active:
+            self._animate()
+        else:
+            self._r = self.size // 3
+            self._draw()
+
+    def _animate(self):
+        if not self._active:
+            return
+        step = 0.4
+        max_r = self.size // 2 - 1
+        min_r = self.size // 4
+        if self._grow:
+            self._r += step
+            if self._r >= max_r:
+                self._grow = False
+        else:
+            self._r -= step
+            if self._r <= min_r:
+                self._grow = True
+        self._draw()
+        self.after(40, self._animate)
+
+    def _draw(self):
+        self.delete("all")
+        cx = cy = self.size / 2
+        self.create_oval(cx - self._r, cy - self._r, cx + self._r, cy + self._r,
+                         fill=self.color, outline="")
+
+
 class ZyphraApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("dark")
         self.title(f"{APP_NAME}  v{VERSION}")
-        self.geometry("1120x700")
-        self.minsize(980, 620)
+        self.geometry("1180x740")
+        self.minsize(1000, 640)
         self.configure(fg_color=COLORS["bg"])
 
         self.sigs = load_signatures()
@@ -313,12 +419,55 @@ class ZyphraApp(ctk.CTk):
         self.counts = {"high": 0, "medium": 0, "low": 0}
         self.options = {k: tk.BooleanVar(value=True) for k in
                         ("processes", "fivem", "prefetch", "recent", "files")}
+        self._row_anim_queue = []
+        self._logo_glow = 0
+        self._logo_dir = 1
 
+        self._build_header()
         self._build_sidebar()
         self._build_main()
         self._style_tree()
+        self._animate_logo()
         self.after(150, self._consent)
         self.after(100, self._poll)
+        self.after(40, self._process_row_animations)
+
+    def _build_header(self):
+        header = ctk.CTkFrame(self, height=64, corner_radius=0, fg_color=COLORS["panel"])
+        header.pack(side="top", fill="x")
+        header.pack_propagate(False)
+
+        left = ctk.CTkFrame(header, fg_color="transparent")
+        left.pack(side="left", padx=22, fill="y")
+        self.logo_label = ctk.CTkLabel(left, text="◆", font=("Segoe UI", 22, "bold"),
+                                       text_color=COLORS["accent"])
+        self.logo_label.pack(side="left", pady=14)
+        ctk.CTkLabel(left, text=" ZYPHRA", font=("Segoe UI", 18, "bold"),
+                     text_color=COLORS["text"]).pack(side="left", pady=14)
+        ctk.CTkLabel(left, text="  PC CHECK", font=("Segoe UI", 13),
+                     text_color=COLORS["muted"]).pack(side="left", pady=16)
+
+        right = ctk.CTkFrame(header, fg_color="transparent")
+        right.pack(side="right", padx=22, fill="y")
+        self.status_dot = PulseDot(right, color=COLORS["muted"])
+        self.status_dot.pack(side="left", pady=24, padx=(0, 8))
+        self.header_status = ctk.CTkLabel(right, text="Idle", font=("Segoe UI", 12, "bold"),
+                                          text_color=COLORS["muted"])
+        self.header_status.pack(side="left", pady=20)
+
+    def _animate_logo(self):
+        self._logo_glow += self._logo_dir * 6
+        if self._logo_glow >= 255:
+            self._logo_glow, self._logo_dir = 255, -1
+        elif self._logo_glow <= 0:
+            self._logo_glow, self._logo_dir = 0, 1
+        base = (124, 92, 255)
+        white_mix = self._logo_glow / 255
+        r = int(base[0] + (255 - base[0]) * white_mix)
+        g = int(base[1] + (255 - base[1]) * white_mix)
+        b = int(base[2] + (255 - base[2]) * white_mix)
+        self.logo_label.configure(text_color=f"#{r:02x}{g:02x}{b:02x}")
+        self.after(60, self._animate_logo)
 
     def _consent(self):
         ok = messagebox.askokcancel(
@@ -393,9 +542,7 @@ class ZyphraApp(ctk.CTk):
 
         self.status = ctk.CTkLabel(main, text="Ready.", anchor="w", text_color=COLORS["muted"])
         self.status.pack(fill="x", pady=(14, 4))
-        self.bar = ctk.CTkProgressBar(main, height=8, progress_color=COLORS["accent"],
-                                      fg_color=COLORS["card"])
-        self.bar.set(0)
+        self.bar = GradientBar(main, height=10)
         self.bar.pack(fill="x", pady=(0, 12))
 
         frame = ctk.CTkFrame(main, fg_color=COLORS["card"], corner_radius=14)
@@ -442,6 +589,10 @@ class ZyphraApp(ctk.CTk):
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.export_btn.configure(state="disabled")
+        self.status_dot.set_color(COLORS["accent"])
+        self.status_dot.set_active(True)
+        self.header_status.configure(text="Scanning...", text_color=COLORS["accent"])
+        self.bar.start_pulse()
         scanner = Scanner(self.sigs, {k: v.get() for k, v in self.options.items()},
                           self.q, self.stop_event)
         self.worker = threading.Thread(target=scanner.run, daemon=True)
@@ -450,6 +601,7 @@ class ZyphraApp(ctk.CTk):
     def stop_scan(self):
         self.stop_event.set()
         self.status.configure(text="Stopping...")
+        self.header_status.configure(text="Stopping...", text_color=COLORS["medium"])
 
     def _poll(self):
         try:
@@ -468,6 +620,18 @@ class ZyphraApp(ctk.CTk):
                     self.start_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     self.export_btn.configure(state="normal")
+                    self.bar.stop_pulse()
+                    self.status_dot.set_active(False)
+                    if self.counts["high"] > 0:
+                        self.status_dot.set_color(COLORS["high"])
+                        self.header_status.configure(text=f"{self.counts['high']} high-risk finding(s)",
+                                                     text_color=COLORS["high"])
+                    elif self.counts["medium"] > 0:
+                        self.status_dot.set_color(COLORS["medium"])
+                        self.header_status.configure(text="Review recommended", text_color=COLORS["medium"])
+                    else:
+                        self.status_dot.set_color(COLORS["low"])
+                        self.header_status.configure(text="Clean scan", text_color=COLORS["low"])
         except queue.Empty:
             pass
         self.after(100, self._poll)
@@ -477,8 +641,29 @@ class ZyphraApp(ctk.CTk):
         if f.severity in self.counts:
             self.counts[f.severity] += 1
             self.stat_labels[f.severity].configure(text=str(self.counts[f.severity]))
-        self.tree.insert("", "end", values=(f.severity.upper(), f.category, f.title, f.detail, f.path),
-                         tags=(f.severity,))
+        item = self.tree.insert("", "end",
+                                values=(f.severity.upper(), f.category, f.title, f.detail, f.path),
+                                tags=(f.severity, "flash"))
+        self._row_anim_queue.append((item, 0))
+
+    def _process_row_animations(self):
+        style = ttk.Style(self)
+        still_going = []
+        for item, step in self._row_anim_queue:
+            if not self.tree.exists(item):
+                continue
+            if step < 4:
+                tag = f"flash{step}"
+                fade = ["#3a2f66", "#2d2750", "#221f3f", COLORS["card"]]
+                style.configure(f"flash{step}.Treeview")
+                self.tree.tag_configure(tag, background=fade[step])
+                current_tags = list(self.tree.item(item, "tags"))
+                current_tags = [t for t in current_tags if not t.startswith("flash")]
+                current_tags.append(tag)
+                self.tree.item(item, tags=tuple(current_tags))
+                still_going.append((item, step + 1))
+        self._row_anim_queue = still_going
+        self.after(90, self._process_row_animations)
 
     def _open_location(self, _event):
         sel = self.tree.selection()
